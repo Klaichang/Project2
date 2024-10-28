@@ -58,19 +58,19 @@ def get_private_key(expired=False):
     """Retrieve the private key from the database based on expiration"""
     now = int(datetime.now(timezone.utc).timestamp())
     if expired:
-        cursor.execute("SELECT key FROM keys WHERE exp < ?", (now,))
+        cursor.execute("SELECT kid, key FROM keys WHERE exp < ?", (now,))
     else:
-        cursor.execute("SELECT key FROM keys WHERE exp > ?", (now,))
+        cursor.execute("SELECT kid, key FROM keys WHERE exp > ?", (now,))
     
     row = cursor.fetchone()
     if row:
-        key_pem = row[0]
+        kid, key_pem = row[0], row[1]
         private_key = serialization.load_pem_private_key(
             key_pem,
             password=None,
         )
-        return private_key, key_pem  # Return both key object and PEM format
-    return None, None
+        return private_key, key_pem, kid  # Return key object, PEM format, and kid
+    return None, None, None
 
 # HTTP request handler class
 class MyServer(BaseHTTPRequestHandler):
@@ -80,10 +80,10 @@ class MyServer(BaseHTTPRequestHandler):
 
         if parsed_path.path == "/auth":
             # Retrieve the correct private key based on the 'expired' parameter
-            private_key, key_pem = get_private_key(expired='expired' in params)
+            private_key, key_pem, kid = get_private_key(expired='expired' in params)
 
             if private_key:
-                headers = {"kid": "consistentKID"}
+                headers = {"kid": str(kid)}  # Set kid from database in header
                 token_payload = {
                     "user": "username",
                     "exp": datetime.now(timezone.utc) + timedelta(hours=1) if 'expired' not in params else datetime.now(timezone.utc) - timedelta(hours=1)
@@ -110,10 +110,10 @@ class MyServer(BaseHTTPRequestHandler):
             self.end_headers()
 
             now = int(datetime.now(timezone.utc).timestamp())
-            cursor.execute("SELECT key FROM keys WHERE exp > ?", (now,))
+            cursor.execute("SELECT kid, key FROM keys WHERE exp > ?", (now,))
             keys = []
             for row in cursor.fetchall():
-                key_pem = row[0]
+                kid, key_pem = row[0], row[1]
                 public_key = serialization.load_pem_private_key(
                     key_pem,
                     password=None,
@@ -123,7 +123,7 @@ class MyServer(BaseHTTPRequestHandler):
                     "alg": "RS256",
                     "kty": "RSA",
                     "use": "sig",
-                    "kid": "consistentKID",
+                    "kid": str(kid),
                     "n": int_to_base64(public_key.public_numbers().n),
                     "e": int_to_base64(public_key.public_numbers().e),
                 })
